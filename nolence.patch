@@ -1,0 +1,323 @@
+From f02e17567d52021ff1aceb982a74075dc34c6ebd Mon Sep 17 00:00:00 2001
+From: Nolence <rex.magana@gmail.com>
+Date: Thu, 25 Mar 2021 13:57:00 -0600
+Subject: [PATCH 1/3] Stricter types with analysis_options
+
+---
+ analysis_options.yaml       |  6 ++++++
+ lib/src/cache_manager.dart  | 38 +++++++++++++++++++++----------------
+ lib/src/firebase_image.dart | 29 +++++++++++-----------------
+ lib/src/image_object.dart   | 22 ++++++++++-----------
+ pubspec.yaml                |  1 +
+ 5 files changed, 51 insertions(+), 45 deletions(-)
+ create mode 100644 analysis_options.yaml
+
+diff --git a/analysis_options.yaml b/analysis_options.yaml
+new file mode 100644
+index 0000000..b0045a1
+--- /dev/null
++++ b/analysis_options.yaml
+@@ -0,0 +1,6 @@
++include: package:pedantic/analysis_options.yaml
++
++analyzer:
++  strong-mode:
++    implicit-casts: false
++    implicit-dynamic: false
+\ No newline at end of file
+diff --git a/lib/src/cache_manager.dart b/lib/src/cache_manager.dart
+index 7c3a0e3..b2d30bc 100644
+--- a/lib/src/cache_manager.dart
++++ b/lib/src/cache_manager.dart
+@@ -6,6 +6,7 @@ import 'package:firebase_image/firebase_image.dart';
+ import 'package:firebase_image/src/firebase_image.dart';
+ import 'package:firebase_image/src/image_object.dart';
+ import 'package:firebase_storage/firebase_storage.dart';
++import 'package:flutter/foundation.dart';
+ import 'package:path/path.dart';
+ import 'package:path_provider/path_provider.dart';
+ import 'package:sqflite/sqflite.dart';
+@@ -26,7 +27,7 @@ class FirebaseImageCacheManager {
+ 
+   Future<void> open() async {
+     db = await openDatabase(
+-      join((await getDatabasesPath())!, dbName),
++      join((await getDatabasesPath()), dbName),
+       onCreate: (Database db, int version) async {
+         await db.execute('''
+           CREATE TABLE $table (
+@@ -73,7 +74,7 @@ class FirebaseImageCacheManager {
+       where: 'uri = ?',
+       whereArgs: [object.uri],
+     );
+-    return maps.length > 0;
++    return maps.isNotEmpty;
+   }
+ 
+   Future<FirebaseImageObject?> get(String uri, FirebaseImage image) async {
+@@ -88,12 +89,12 @@ class FirebaseImageCacheManager {
+       where: 'uri = ?',
+       whereArgs: [uri],
+     );
+-    if (maps.length > 0) {
+-      FirebaseImageObject returnObject =
+-          FirebaseImageObject.fromMap(maps.first);
++    if (maps.isNotEmpty) {
++      final returnObject = FirebaseImageObject.fromMap(maps.first);
+       returnObject.reference = getImageRef(returnObject, image.firebaseApp);
+-      if (CacheRefreshStrategy.BY_METADATA_DATE == this.cacheRefreshStrategy) {
+-        checkForUpdate(returnObject, image); // Check for update in background
++      if (CacheRefreshStrategy.BY_METADATA_DATE == cacheRefreshStrategy) {
++        await checkForUpdate(
++            returnObject, image); // Check for update in background
+       }
+       return returnObject;
+     }
+@@ -101,20 +102,20 @@ class FirebaseImageCacheManager {
+   }
+ 
+   Reference getImageRef(FirebaseImageObject object, FirebaseApp? firebaseApp) {
+-    FirebaseStorage storage =
++    final storage =
+         FirebaseStorage.instanceFor(app: firebaseApp, bucket: object.bucket);
+     return storage.ref().child(object.remotePath);
+   }
+ 
+   Future<void> checkForUpdate(
+       FirebaseImageObject object, FirebaseImage image) async {
+-    int remoteVersion = (await object.reference.getMetadata())
++    final remoteVersion = (await object.reference.getMetadata())
+             .updated
+             ?.millisecondsSinceEpoch ??
+         -1;
+     if (remoteVersion != object.version) {
+       // If true, download new image for next load
+-      await this.upsertRemoteFileToCache(object, image.maxSizeBytes);
++      await upsertRemoteFileToCache(object, image.maxSizeBytes);
+     }
+   }
+ 
+@@ -147,21 +148,26 @@ class FirebaseImageCacheManager {
+ 
+   Future<Uint8List?> upsertRemoteFileToCache(
+       FirebaseImageObject object, int maxSizeBytes) async {
+-    if (CacheRefreshStrategy.BY_METADATA_DATE == this.cacheRefreshStrategy) {
++    if (CacheRefreshStrategy.BY_METADATA_DATE == cacheRefreshStrategy) {
+       object.version = (await object.reference.getMetadata())
+               .updated
+               ?.millisecondsSinceEpoch ??
+           0;
+     }
+-    Uint8List? bytes = await remoteFileBytes(object, maxSizeBytes);
+-    await putFile(object, bytes);
++    final bytes = await remoteFileBytes(object, maxSizeBytes);
++
++    if (bytes != null) {
++      debugPrint('Bytes of object ${object.remotePath} could not be fetched');
++      await putFile(object, bytes);
++    }
++
+     return bytes;
+   }
+ 
+   Future<FirebaseImageObject> putFile(
+-      FirebaseImageObject object, final bytes) async {
+-    String path = basePath + "/" + object.remotePath;
+-    path = path.replaceAll("//", "/");
++      FirebaseImageObject object, List<int> bytes) async {
++    var path = basePath + '/' + object.remotePath;
++    path = path.replaceAll('//', '/');
+     //print(join(basePath, object.remotePath)); Join isn't working?
+     final localFile = await File(path).create(recursive: true);
+     await localFile.writeAsBytes(bytes);
+diff --git a/lib/src/firebase_image.dart b/lib/src/firebase_image.dart
+index 5526269..ae49c2c 100644
+--- a/lib/src/firebase_image.dart
++++ b/lib/src/firebase_image.dart
+@@ -65,35 +65,29 @@ class FirebaseImage extends ImageProvider<FirebaseImage> {
+   }
+ 
+   static Reference _getImageRef(String location, FirebaseApp? firebaseApp) {
+-    FirebaseStorage storage = FirebaseStorage.instanceFor(
++    final storage = FirebaseStorage.instanceFor(
+         app: firebaseApp, bucket: _getBucket(location));
+     return storage.ref().child(_getImagePath(location));
+   }
+ 
+   Future<Uint8List> _fetchImage() async {
+     Uint8List? bytes;
+-    FirebaseImageCacheManager cacheManager = FirebaseImageCacheManager(
+-      cacheRefreshStrategy,
+-    );
++    final cacheManager = FirebaseImageCacheManager(cacheRefreshStrategy);
+ 
+     if (shouldCache) {
+       await cacheManager.open();
+-      FirebaseImageObject? localObject =
+-          await cacheManager.get(_imageObject.uri, this);
++      final localObject = await cacheManager.get(_imageObject.uri, this);
+ 
+       if (localObject != null) {
+         bytes = await cacheManager.localFileBytes(localObject);
+-        if (bytes == null) {
+-          bytes = await cacheManager.upsertRemoteFileToCache(
+-              _imageObject, this.maxSizeBytes);
+-        }
++        bytes ??= await cacheManager.upsertRemoteFileToCache(
++            _imageObject, maxSizeBytes);
+       } else {
+         bytes = await cacheManager.upsertRemoteFileToCache(
+-            _imageObject, this.maxSizeBytes);
++            _imageObject, maxSizeBytes);
+       }
+     } else {
+-      bytes =
+-          await cacheManager.remoteFileBytes(_imageObject, this.maxSizeBytes);
++      bytes = await cacheManager.remoteFileBytes(_imageObject, maxSizeBytes);
+     }
+ 
+     return bytes!;
+@@ -120,15 +114,14 @@ class FirebaseImage extends ImageProvider<FirebaseImage> {
+   @override
+   bool operator ==(dynamic other) {
+     if (other.runtimeType != runtimeType) return false;
+-    final FirebaseImage typedOther = other;
++    final typedOther = other as FirebaseImage;
+     return _imageObject.uri == typedOther._imageObject.uri &&
+-        this.scale == typedOther.scale;
++        scale == typedOther.scale;
+   }
+ 
+   @override
+-  int get hashCode => hashValues(_imageObject.uri, this.scale);
++  int get hashCode => hashValues(_imageObject.uri, scale);
+ 
+   @override
+-  String toString() =>
+-      '$runtimeType("${_imageObject.uri}", scale: ${this.scale})';
++  String toString() => '$runtimeType("${_imageObject.uri}", scale: $scale)';
+ }
+diff --git a/lib/src/image_object.dart b/lib/src/image_object.dart
+index 95fc97e..34b5e54 100644
+--- a/lib/src/image_object.dart
++++ b/lib/src/image_object.dart
+@@ -17,22 +17,22 @@ class FirebaseImageObject {
+   }) : uri = '$bucket$remotePath';
+ 
+   Map<String, dynamic> toMap() {
+-    return {
+-      'version': this.version,
+-      'localPath': this.localPath,
+-      'bucket': this.bucket,
+-      'remotePath': this.remotePath,
+-      'uri': this.uri,
++    return <String, dynamic>{
++      'version': version,
++      'localPath': localPath,
++      'bucket': bucket,
++      'remotePath': remotePath,
++      'uri': uri,
+     };
+   }
+ 
+   factory FirebaseImageObject.fromMap(Map<String, dynamic> map) {
+     return FirebaseImageObject(
+-      version: map["version"] ?? -1,
+-      reference: map["reference"],
+-      localPath: map["localPath"],
+-      bucket: map["bucket"],
+-      remotePath: map["remotePath"],
++      version: map['version'] as int? ?? -1,
++      reference: map['reference'] as Reference,
++      localPath: map['localPath'] as String?,
++      bucket: map['bucket'] as String,
++      remotePath: map['remotePath'] as String,
+     );
+   }
+ }
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 3aa336b..a2be9c2 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -19,3 +19,4 @@ dependencies:
+ dev_dependencies:
+   flutter_test:
+     sdk: flutter
++  pedantic: ^1.11.0
+
+From 7b8402f46305952aa18beeb7a352262f26eadc40 Mon Sep 17 00:00:00 2001
+From: Nolence <rex.magana@gmail.com>
+Date: Thu, 25 Mar 2021 14:54:35 -0600
+Subject: [PATCH 2/3] removes unsafe ! unwraps
+
+---
+ lib/src/cache_manager.dart | 13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/lib/src/cache_manager.dart b/lib/src/cache_manager.dart
+index b2d30bc..fd62d88 100644
+--- a/lib/src/cache_manager.dart
++++ b/lib/src/cache_manager.dart
+@@ -135,8 +135,10 @@ class FirebaseImageCacheManager {
+   }
+ 
+   Future<Uint8List?> localFileBytes(FirebaseImageObject? object) async {
+-    if (await _fileExists(object)) {
+-      return File(object!.localPath!).readAsBytes();
++    final localPath = object?.localPath;
++    if (localPath == null) return null;
++    if (await _fileExists(localPath)) {
++      return File(localPath).readAsBytes();
+     }
+     return null;
+   }
+@@ -175,11 +177,8 @@ class FirebaseImageCacheManager {
+     return await upsert(object);
+   }
+ 
+-  Future<bool> _fileExists(FirebaseImageObject? object) async {
+-    if (object?.localPath == null) {
+-      return false;
+-    }
+-    return File(object!.localPath!).exists();
++  Future<bool> _fileExists(String localPath) async {
++    return File(localPath).exists();
+   }
+ 
+   Future<String> _createFilePath() async {
+
+From b4eb1227896c885138dee885a178c8ddcb68035a Mon Sep 17 00:00:00 2001
+From: Nolence <rex.magana@gmail.com>
+Date: Thu, 25 Mar 2021 15:34:41 -0600
+Subject: [PATCH 3/3] bump version and update changelog
+
+---
+ CHANGELOG.md | 5 +++++
+ pubspec.yaml | 2 +-
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ea046a0..59d1bb4 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,3 +1,8 @@
++## [1.0.1+1] 12/03/2021
++* Fixes [#37] "Operand of null-aware operation '!' has type 'String' which excludes null."
++* Switches to strong-mode which includes no implicity casts and no implicit-dynamics.
++* Removes several force unwraps (!) thus handling nullable values better
++
+ ## [1.0.1] 12/03/2021
+ * Formatted code according to `dartfmt`
+ 
+diff --git a/pubspec.yaml b/pubspec.yaml
+index a2be9c2..ecaa00a 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -1,6 +1,6 @@
+ name: firebase_image
+ description: A cached Flutter ImageProvider for Firebase Cloud Storage image objects.
+-version: 1.0.1
++version: 1.0.1+1
+ homepage: https://github.com/mattreid1/firebase_image
+ 
+ environment:
