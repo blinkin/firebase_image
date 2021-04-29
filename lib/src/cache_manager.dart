@@ -89,7 +89,6 @@ class FirebaseImageCacheManager {
       where: 'uri = ?',
       whereArgs: [uri],
     );
-    print(maps.first);
     if (maps.isNotEmpty) {
       try {
         final returnObject = FirebaseImageObject.fromMap(maps.first);
